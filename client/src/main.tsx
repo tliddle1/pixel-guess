@@ -7,10 +7,21 @@ const socketUrl = `ws://${window.location.hostname}:3001`;
 const clientIdKey = "pixel-guess-session-id";
 const currentRoomKey = "pixel-guess-current-room";
 
+function browserId(): string {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  if (crypto.getRandomValues) {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return [...bytes].map((byte, index) => `${[4, 6, 8, 10].includes(index) ? "-" : ""}${byte.toString(16).padStart(2, "0")}`).join("");
+  }
+  return `client-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 function clientId(): string {
   const existing = sessionStorage.getItem(clientIdKey);
   if (existing) return existing;
-  const created = crypto.randomUUID();
+  const created = browserId();
   sessionStorage.setItem(clientIdKey, created);
   return created;
 }
