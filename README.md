@@ -1,12 +1,12 @@
 # Pixel Guess
 
-A local browser-based multiplayer drawing-and-guessing game inspired by Skribbl.io, but with a pixel-art canvas instead of freehand drawing.
+A browser-based multiplayer drawing-and-guessing game inspired by Skribbl.io, but with a pixel-art canvas instead of freehand drawing.
 
 ## Features
 
 - TypeScript across client, server, and shared game logic
 - React frontend with a retro pixel-art interface
-- Node.js WebSocket backend using `ws`
+- PartyKit WebSocket backend for hosted multiplayer rooms
 - Create and join rooms with short room codes
 - Artist rotation, 3 word choices, round timer, answer reveal, and final rankings
 - 32x32 default pixel grid with configurable room setting
@@ -30,23 +30,89 @@ npm run dev
 Open the client at:
 
 ```text
-http://localhost:5173
+http://localhost:5173/pixel-guess/
 ```
 
-The WebSocket server runs at:
+The PartyKit server runs at:
 
 ```text
-ws://localhost:3001
+http://localhost:1999
 ```
 
 ## Scripts
 
 ```bash
-npm run dev        # start client and server
-npm run test       # run Vitest tests
-npm run typecheck  # run TypeScript checks
-npm run build      # build the React client and typecheck the project
+npm run dev          # start Vite and PartyKit locally
+npm run dev:client   # start only the Vite client
+npm run dev:party    # start only the PartyKit backend
+npm run test         # run Vitest tests
+npm run typecheck    # run TypeScript checks
+npm run build        # build the React client and typecheck the project
+npm run deploy:party # deploy the PartyKit backend
 ```
+
+## Deployment
+
+The frontend is a static Vite build that can run on GitHub Pages. The backend runs separately on PartyKit.
+
+### Manual PartyKit setup
+
+1. Install dependencies locally:
+
+   ```bash
+   npm install
+   ```
+
+2. Log in to PartyKit and deploy the backend:
+
+   ```bash
+   npm run deploy:party
+   ```
+
+3. Copy the PartyKit host from the deploy output. It should look like:
+
+   ```text
+   pixel-guess.<your-github-username>.partykit.dev
+   ```
+
+4. In the GitHub repository, go to **Settings -> Secrets and variables -> Actions -> Variables**.
+
+5. Add a repository variable:
+
+   ```text
+   VITE_PARTYKIT_HOST=pixel-guess.<your-github-username>.partykit.dev
+   ```
+
+6. Go to **Settings -> Pages**.
+
+7. Set **Build and deployment** to **GitHub Actions**.
+
+8. Run the **Deploy GitHub Pages** workflow, or push to `main`.
+
+### Optional PartyKit deploy workflow
+
+The repository includes a manual **Deploy PartyKit** workflow. To use it:
+
+1. Generate a PartyKit token locally:
+
+   ```bash
+   npx partykit@latest token generate
+   ```
+
+2. Copy the generated values.
+
+3. In the GitHub repository, go to **Settings -> Secrets and variables -> Actions -> Secrets**.
+
+4. Add these repository secrets:
+
+   ```text
+   PARTYKIT_LOGIN=<generated login>
+   PARTYKIT_TOKEN=<generated token>
+   ```
+
+5. Run the **Deploy PartyKit** workflow from the GitHub Actions tab.
+
+Do not commit `PARTYKIT_LOGIN` or `PARTYKIT_TOKEN`.
 
 ## Gameplay
 
@@ -64,8 +130,9 @@ npm run build      # build the React client and typecheck the project
 ## Architecture
 
 ```text
-client/   React UI, WebSocket client, pixel drawing board
-server/   Node.js WebSocket server, rooms, timers, authoritative game state
+client/   React UI, PartySocket client, pixel drawing board
+party/    PartyKit server, rooms, timers, authoritative game state
+server/   Legacy local Node.js WebSocket server kept as a reference
 shared/   Shared TypeScript types, scoring, round logic, sample word list
 tests/    Vitest coverage for core game logic
 ```

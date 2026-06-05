@@ -1,11 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import PartySocket from "partysocket";
 import { DEFAULT_SETTINGS, PALETTE, type CanvasPatch, type ClientEvent, type Pixel, type PublicRoomState, type ServerEvent, type Tool } from "@shared/types";
 import "./styles.css";
 
-const socketUrl = `ws://${window.location.hostname}:3001`;
 const clientIdKey = "pixel-guess-session-id";
 const currentRoomKey = "pixel-guess-current-room";
+const configuredPartyHost = import.meta.env.VITE_PARTYKIT_HOST as string | undefined;
+const partyHost = configuredPartyHost || (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "localhost:1999" : "");
+
+type GameSocket = Pick<PartySocket, "addEventListener" | "close" | "readyState" | "send">;
+
+function roomCodeApiUrl(): string {
+  const protocol = partyHost.includes("localhost") || partyHost.startsWith("127.0.0.1") ? "http" : "https";
+  return `${protocol}://${partyHost}/api/rooms`;
+}
 
 function browserId(): string {
   if (crypto.randomUUID) return crypto.randomUUID();
@@ -34,7 +43,7 @@ function forgetRoom(): void {
   sessionStorage.removeItem(currentRoomKey);
 }
 
-function send(socket: WebSocket | null, event: ClientEvent): void {
+function send(socket: GameSocket | null, event: ClientEvent): void {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(event));
 }
 
@@ -184,7 +193,7 @@ function PixelBoard({
 }
 
 function App() {
-  const [socket, setSocket] = useState<WebSocket | null>(null);
+  const [socket, setSocket] = useState<GameSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [name, setName] = useState("Pixel Pal");
@@ -197,15 +206,28 @@ function App() {
   const [undoStack, setUndoStack] = useState<CanvasPatch[]>([]);
   const [redoStack, setRedoStack] = useState<CanvasPatch[]>([]);
   const cid = useMemo(clientId, []);
+  const socketRef = useRef<GameSocket | null>(null);
+  const openEventRef = useRef<ClientEvent | null>(null);
 
   useEffect(() => {
-    const ws = new WebSocket(socketUrl);
+    const roomCode = sessionStorage.getItem(currentRoomKey);
+    if (roomCode) connectToRoom(roomCode, { type: "rejoin_room", roomCode, clientId: cid });
+    return () => socketRef.current?.close();
+  }, []);
+
+  function connectToRoom(roomCode: string, event: ClientEvent): void {
+    if (!partyHost) {
+      setError("Missing VITE_PARTYKIT_HOST. Set it to your PartyKit host before deploying.");
+      return;
+    }
+
+    socketRef.current?.close();
+    setConnected(false);
+    openEventRef.current = event;
+    const ws = new PartySocket({ host: partyHost, room: roomCode.toUpperCase() });
     ws.addEventListener("open", () => {
       setConnected(true);
-      const roomCode = sessionStorage.getItem(currentRoomKey);
-      if (roomCode) {
-        ws.send(JSON.stringify({ type: "rejoin_room", roomCode, clientId: cid } satisfies ClientEvent));
-      }
+      if (openEventRef.current) ws.send(JSON.stringify(openEventRef.current));
     });
     ws.addEventListener("close", () => setConnected(false));
     ws.addEventListener("message", (message) => {
@@ -218,6 +240,7 @@ function App() {
         setPlayerId(event.playerId);
         setState(event.state);
         rememberRoom(event.state.code);
+        openEventRef.current = { type: "rejoin_room", roomCode: event.state.code, clientId: cid };
         setError("");
       }
       if (event.type === "room_state") setState(event.state);
@@ -244,9 +267,9 @@ function App() {
         setState(event.state);
       }
     });
+    socketRef.current = ws;
     setSocket(ws);
-    return () => ws.close();
-  }, []);
+  }
 
   const me = state?.players.find((player) => player.id === playerId) ?? null;
   const artist = state?.players.find((player) => player.id === state.artistId) ?? null;
@@ -257,16 +280,39 @@ function App() {
   const canChooseWord = Boolean(me && state?.artistId === me.id && state.phase === "choosing-word");
   const rankedPlayers = [...(state?.players ?? [])].sort((a, b) => b.score - a.score);
 
-  function createRoom(): void {
-    send(socket, { type: "create_room", name, clientId: cid });
+  async function createRoom(): Promise<void> {
+    if (!partyHost) {
+      setError("Missing VITE_PARTYKIT_HOST. Set it to your PartyKit host before deploying.");
+      return;
+    }
+    try {
+      const response = await fetch(roomCodeApiUrl(), { method: "POST" });
+      if (!response.ok) throw new Error("Could not create a room code.");
+      const payload = (await response.json()) as { roomCode: string };
+      connectToRoom(payload.roomCode, { type: "create_room", name, clientId: cid });
+    } catch {
+      setError("Could not reach the PartyKit room service.");
+    }
   }
 
-  function createFreeDraw(): void {
-    send(socket, { type: "create_free_draw", name, clientId: cid });
+  async function createFreeDraw(): Promise<void> {
+    if (!partyHost) {
+      setError("Missing VITE_PARTYKIT_HOST. Set it to your PartyKit host before deploying.");
+      return;
+    }
+    try {
+      const response = await fetch(roomCodeApiUrl(), { method: "POST" });
+      if (!response.ok) throw new Error("Could not create a room code.");
+      const payload = (await response.json()) as { roomCode: string };
+      connectToRoom(payload.roomCode, { type: "create_free_draw", name, clientId: cid });
+    } catch {
+      setError("Could not reach the PartyKit room service.");
+    }
   }
 
   function joinRoom(spectator = false): void {
-    send(socket, { type: "join_room", roomCode: roomCodeInput.toUpperCase(), name, clientId: cid, spectator });
+    const roomCode = roomCodeInput.toUpperCase();
+    connectToRoom(roomCode, { type: "join_room", roomCode, name, clientId: cid, spectator });
   }
 
   function drawPatch(patch: CanvasPatch): void {
@@ -343,16 +389,16 @@ function App() {
           </label>
           <div className="entry-actions">
             <div className="create-row">
-              <button onClick={createRoom} disabled={!connected}>Create room</button>
-              <button className="secondary" onClick={createFreeDraw} disabled={!connected}>Free draw</button>
+              <button onClick={createRoom} disabled={!partyHost}>Create room</button>
+              <button className="secondary" onClick={createFreeDraw} disabled={!partyHost}>Free draw</button>
             </div>
             <div className="join-row">
               <input placeholder="ROOM" value={roomCodeInput} maxLength={4} onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())} />
-              <button onClick={() => joinRoom(false)} disabled={!connected || roomCodeInput.length < 4}>Join</button>
-              <button className="secondary" onClick={() => joinRoom(true)} disabled={!connected || roomCodeInput.length < 4}>Watch</button>
+              <button onClick={() => joinRoom(false)} disabled={!partyHost || roomCodeInput.length < 4}>Join</button>
+              <button className="secondary" onClick={() => joinRoom(true)} disabled={!partyHost || roomCodeInput.length < 4}>Watch</button>
             </div>
           </div>
-          <p className="status">{connected ? "Server connected" : "Connecting to local server..."}</p>
+          <p className="status">{connected ? "Room connected" : partyHost ? "Choose or join a room" : "Set VITE_PARTYKIT_HOST to connect"}</p>
           {error && <p className="error">{error}</p>}
         </section>
       </main>

@@ -4,6 +4,7 @@ import { fileURLToPath, URL } from "node:url";
 
 export default defineConfig({
   root: "client",
+  base: process.env.VITE_BASE_PATH ?? "/pixel-guess/",
   plugins: [react()],
   resolve: {
     alias: {

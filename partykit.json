@@ -1,0 +1,6 @@
+{
+  "name": "pixel-guess",
+  "main": "party/src/index.ts",
+  "port": 1999,
+  "compatibilityDate": "2026-06-05"
+}
