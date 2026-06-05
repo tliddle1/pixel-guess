@@ -6,6 +6,7 @@ import "./styles.css";
 
 const clientIdKey = "pixel-guess-session-id";
 const currentRoomKey = "pixel-guess-current-room";
+const localFreeDrawCode = "LOCAL";
 const configuredPartyHost = import.meta.env.VITE_PARTYKIT_HOST as string | undefined;
 const partyHost = configuredPartyHost || (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "localhost:1999" : "");
 
@@ -49,6 +50,10 @@ function send(socket: GameSocket | null, event: ClientEvent): void {
 
 function cloneCanvas(canvas: (string | null)[][]): (string | null)[][] {
   return canvas.map((row) => [...row]);
+}
+
+function createCanvas(size: number): (string | null)[][] {
+  return Array.from({ length: size }, () => Array.from({ length: size }, () => null));
 }
 
 function applyPatch(canvas: (string | null)[][], patch: CanvasPatch): (string | null)[][] {
@@ -279,6 +284,42 @@ function App() {
   const canClear = Boolean(me && state?.artistId === me.id && isFreeDraw);
   const canChooseWord = Boolean(me && state?.artistId === me.id && state.phase === "choosing-word");
   const rankedPlayers = [...(state?.players ?? [])].sort((a, b) => b.score - a.score);
+  const isLocalFreeDraw = state?.phase === "free-draw" && state.code === localFreeDrawCode;
+
+  function startLocalFreeDraw(): void {
+    socketRef.current?.close();
+    setSocket(null);
+    setConnected(false);
+    forgetRoom();
+    const playerId = `local-${cid}`;
+    setPlayerId(playerId);
+    setUndoStack([]);
+    setRedoStack([]);
+    setError("");
+    setState({
+      code: localFreeDrawCode,
+      hostId: playerId,
+      phase: "free-draw",
+      settings: { ...DEFAULT_SETTINGS },
+      players: [{ id: playerId, clientId: cid, name: name.trim().slice(0, 24) || "Player", score: 0, connected: true, isSpectator: false }],
+      artistId: playerId,
+      round: 1,
+      wordProgress: "",
+      canvas: createCanvas(DEFAULT_SETTINGS.gridSize),
+      chat: [
+        {
+          id: browserId(),
+          playerId: null,
+          playerName: "System",
+          text: "Started a local free draw.",
+          kind: "system",
+          createdAt: Date.now()
+        }
+      ],
+      remainingSeconds: 0,
+      guessedPlayerIds: []
+    });
+  }
 
   async function createRoom(): Promise<void> {
     if (!partyHost) {
@@ -297,7 +338,7 @@ function App() {
 
   async function createFreeDraw(): Promise<void> {
     if (!partyHost) {
-      setError("Missing VITE_PARTYKIT_HOST. Set it to your PartyKit host before deploying.");
+      startLocalFreeDraw();
       return;
     }
     try {
@@ -306,7 +347,7 @@ function App() {
       const payload = (await response.json()) as { roomCode: string };
       connectToRoom(payload.roomCode, { type: "create_free_draw", name, clientId: cid });
     } catch {
-      setError("Could not reach the PartyKit room service.");
+      startLocalFreeDraw();
     }
   }
 
@@ -318,6 +359,10 @@ function App() {
   function drawPatch(patch: CanvasPatch): void {
     setUndoStack((stack) => [...stack, patch].slice(-80));
     setRedoStack([]);
+    if (isLocalFreeDraw) {
+      setState((current) => (current ? { ...current, canvas: applyPatch(current.canvas, patch) } : current));
+      return;
+    }
     send(socket, { type: "draw_patch", patch });
   }
 
@@ -327,6 +372,10 @@ function App() {
     const inverse = inversePatch(patch);
     setUndoStack((stack) => stack.slice(0, -1));
     setRedoStack((stack) => [...stack, patch]);
+    if (isLocalFreeDraw) {
+      setState((current) => (current ? { ...current, canvas: applyPatch(current.canvas, inverse) } : current));
+      return;
+    }
     send(socket, { type: "draw_patch", patch: inverse });
   }
 
@@ -335,6 +384,10 @@ function App() {
     if (!patch) return;
     setRedoStack((stack) => stack.slice(0, -1));
     setUndoStack((stack) => [...stack, patch]);
+    if (isLocalFreeDraw) {
+      setState((current) => (current ? { ...current, canvas: applyPatch(current.canvas, patch) } : current));
+      return;
+    }
     send(socket, { type: "draw_patch", patch });
   }
 
@@ -342,6 +395,10 @@ function App() {
     if (!canClear) return;
     setUndoStack([]);
     setRedoStack([]);
+    if (isLocalFreeDraw) {
+      setState((current) => (current ? { ...current, canvas: createCanvas(current.settings.gridSize) } : current));
+      return;
+    }
     send(socket, { type: "clear_canvas" });
   }
 
@@ -390,7 +447,7 @@ function App() {
           <div className="entry-actions">
             <div className="create-row">
               <button onClick={createRoom} disabled={!partyHost}>Create room</button>
-              <button className="secondary" onClick={createFreeDraw} disabled={!partyHost}>Free draw</button>
+              <button className="secondary" onClick={createFreeDraw}>Free draw</button>
             </div>
             <div className="join-row">
               <input placeholder="ROOM" value={roomCodeInput} maxLength={4} onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())} />
@@ -398,7 +455,7 @@ function App() {
               <button className="secondary" onClick={() => joinRoom(true)} disabled={!partyHost || roomCodeInput.length < 4}>Watch</button>
             </div>
           </div>
-          <p className="status">{connected ? "Room connected" : partyHost ? "Choose or join a room" : "Set VITE_PARTYKIT_HOST to connect"}</p>
+          <p className="status">{connected ? "Room connected" : partyHost ? "Choose or join a room" : "Free draw works offline"}</p>
           {error && <p className="error">{error}</p>}
         </section>
       </main>

@@ -3,9 +3,11 @@ import { calculateArtistBonus, calculateGuesserScore, isCorrectGuess } from "../
 import { createArtistOrder, maskWord, selectNextArtistFromOrder, shouldEndGame, shouldEndRound } from "../../shared/src/roundLogic";
 import {
   DEFAULT_SETTINGS,
+  PALETTE,
   type CanvasPatch,
   type ChatMessage,
   type ClientEvent,
+  type Pixel,
   type Player,
   type PublicRoomState,
   type RoomSettings,
@@ -43,13 +45,26 @@ type StoredRoom = Omit<Room, "guessedPlayerIds"> & {
   updatedAt: number;
 };
 
+type RateLimitBucket = {
+  count: number;
+  resetAt: number;
+};
+
 const STORAGE_KEY = "room";
 const ROUND_RESULTS_DELAY_MS = 4000;
+const MAX_CHAT_MESSAGES = 50;
+const MAX_REPLAY_PATCHES = 200;
+const MAX_PATCH_PIXELS = 256;
+const MAX_SOCKET_MESSAGE_BYTES = 24_000;
+const DRAW_RATE_LIMIT = { max: 30, windowMs: 1000 };
+const CHAT_RATE_LIMIT = { max: 6, windowMs: 5000 };
+const ROOM_CREATE_RATE_LIMIT = { max: 20, windowMs: 60_000 };
+const DEFAULT_ALLOWED_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"];
 const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Origin": "*"
+  "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
+const roomCreationBuckets = new Map<string, RateLimitBucket>();
 
 function createCanvas(size: number): (string | null)[][] {
   return Array.from({ length: size }, () => Array.from({ length: size }, () => null));
@@ -58,6 +73,77 @@ function createCanvas(size: number): (string | null)[][] {
 function createRoomCode(): string {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   return Array.from({ length: 4 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+}
+
+function envString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function allowedOrigins(env?: Record<string, unknown>): string[] {
+  const configured = envString(env?.PUBLIC_ALLOWED_ORIGINS)
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  return [...DEFAULT_ALLOWED_ORIGINS, ...configured];
+}
+
+function isAllowedOrigin(origin: string, env?: Record<string, unknown>): boolean {
+  if (allowedOrigins(env).includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    return url.protocol === "https:" && url.hostname.endsWith(".github.io");
+  } catch {
+    return false;
+  }
+}
+
+function corsHeaders(origin: string | null, env?: Record<string, unknown>): HeadersInit {
+  const headers: Record<string, string> = { ...CORS_HEADERS };
+  if (origin && isAllowedOrigin(origin, env)) {
+    headers["Access-Control-Allow-Origin"] = origin;
+    headers.Vary = "Origin";
+  }
+  return headers;
+}
+
+function isOriginAllowed(req: Party.Request, env?: Record<string, unknown>): boolean {
+  const origin = req.headers.get("Origin");
+  if (!origin) return true;
+  return isAllowedOrigin(origin, env);
+}
+
+function rateLimitKey(req: Party.Request): string {
+  return req.headers.get("CF-Connecting-IP") ?? req.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+function consumeBucket(buckets: Map<string, RateLimitBucket>, key: string, limit: { max: number; windowMs: number }): boolean {
+  const now = Date.now();
+  const bucket = buckets.get(key);
+  if (!bucket || bucket.resetAt <= now) {
+    buckets.set(key, { count: 1, resetAt: now + limit.windowMs });
+    return true;
+  }
+  if (bucket.count >= limit.max) return false;
+  bucket.count += 1;
+  return true;
+}
+
+function isValidPixel(pixel: Pixel, size: number): boolean {
+  return (
+    Number.isInteger(pixel.x) &&
+    Number.isInteger(pixel.y) &&
+    pixel.x >= 0 &&
+    pixel.y >= 0 &&
+    pixel.x < size &&
+    pixel.y < size &&
+    (pixel.color === null || PALETTE.includes(pixel.color))
+  );
+}
+
+function isValidPatch(patch: CanvasPatch, size: number): boolean {
+  if (!Array.isArray(patch.before) || !Array.isArray(patch.after)) return false;
+  if (patch.after.length === 0 || patch.after.length > MAX_PATCH_PIXELS || patch.before.length > MAX_PATCH_PIXELS) return false;
+  return patch.before.every((pixel) => isValidPixel(pixel, size)) && patch.after.every((pixel) => isValidPixel(pixel, size));
 }
 
 function roomFromStored(stored: StoredRoom): Room {
@@ -90,20 +176,29 @@ export default class Server implements Party.Server {
   private state: Room | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private roundTransition: ReturnType<typeof setTimeout> | null = null;
+  private drawBuckets = new Map<string, RateLimitBucket>();
+  private chatBuckets = new Map<string, RateLimitBucket>();
 
   constructor(readonly room: Party.Room) {}
 
-  static async onFetch(req: Party.Request) {
+  static async onFetch(req: Party.Request, lobby: Party.FetchLobby) {
     const url = new URL(req.url);
     if (req.method === "OPTIONS" && url.pathname === "/api/rooms") {
-      return new Response(null, { headers: CORS_HEADERS });
+      return new Response(null, { headers: corsHeaders(req.headers.get("Origin"), lobby.env) });
     }
 
     if (req.method === "POST" && url.pathname === "/api/rooms") {
-      return Response.json({ roomCode: createRoomCode() }, { headers: CORS_HEADERS });
+      const headers = corsHeaders(req.headers.get("Origin"), lobby.env);
+      if (!isOriginAllowed(req, lobby.env)) {
+        return Response.json({ error: "Origin not allowed." }, { headers, status: 403 });
+      }
+      if (!consumeBucket(roomCreationBuckets, rateLimitKey(req), ROOM_CREATE_RATE_LIMIT)) {
+        return Response.json({ error: "Too many room requests." }, { headers, status: 429 });
+      }
+      return Response.json({ roomCode: createRoomCode() }, { headers });
     }
 
-    return new Response("Not found", { headers: CORS_HEADERS, status: 404 });
+    return new Response("Not found", { headers: corsHeaders(req.headers.get("Origin"), lobby.env), status: 404 });
   }
 
   async onStart() {
@@ -113,9 +208,20 @@ export default class Server implements Party.Server {
     this.resumeTimer();
   }
 
+  onConnect(connection: Party.Connection, ctx: Party.ConnectionContext) {
+    const origin = ctx.request.headers.get("Origin");
+    if (origin && !isAllowedOrigin(origin, this.room.env)) {
+      connection.close(1008, "Origin not allowed.");
+    }
+  }
+
   async onMessage(raw: string | ArrayBuffer, connection: Party.Connection) {
     try {
       const message = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
+      if (message.length > MAX_SOCKET_MESSAGE_BYTES) {
+        send(connection, { type: "error", message: "Message is too large." });
+        return;
+      }
       await this.handleMessage(connection, JSON.parse(message) as ClientEvent);
     } catch {
       send(connection, { type: "error", message: "Invalid message." });
@@ -187,6 +293,7 @@ export default class Server implements Party.Server {
       createdAt: Date.now()
     };
     room.chat.push(message);
+    room.chat = room.chat.slice(-MAX_CHAT_MESSAGES);
     this.broadcast({ type: "chat_message", message });
     await this.persist();
   }
@@ -198,6 +305,7 @@ export default class Server implements Party.Server {
       }
     }
     room.replay.push(patch);
+    room.replay = room.replay.slice(-MAX_REPLAY_PATCHES);
   }
 
   private clearCanvas(room: Room): void {
@@ -437,6 +545,11 @@ export default class Server implements Party.Server {
 
     if (event.type === "draw_patch") {
       if (player.id !== room.artistId || (room.phase !== "drawing" && room.phase !== "free-draw")) return;
+      if (!consumeBucket(this.drawBuckets, player.id, DRAW_RATE_LIMIT)) return;
+      if (!isValidPatch(event.patch, room.settings.gridSize)) {
+        send(connection, { type: "error", message: "Invalid drawing update." });
+        return;
+      }
       this.applyPatch(room, event.patch);
       this.broadcast({ type: "canvas_patch", patch: event.patch });
       await this.persist();
@@ -452,6 +565,7 @@ export default class Server implements Party.Server {
     }
 
     if (event.type === "submit_guess") {
+      if (!consumeBucket(this.chatBuckets, player.id, CHAT_RATE_LIMIT)) return;
       const text = event.text.trim().slice(0, 120);
       if (!text) return;
       const message: ChatMessage = {
@@ -479,6 +593,7 @@ export default class Server implements Party.Server {
         }
       }
       room.chat.push(message);
+      room.chat = room.chat.slice(-MAX_CHAT_MESSAGES);
       this.broadcast({ type: "chat_message", message });
       this.sendState(room);
       await this.persist();

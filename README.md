@@ -83,11 +83,19 @@ The frontend is a static Vite build that can run on GitHub Pages. The backend ru
    VITE_PARTYKIT_HOST=pixel-guess.<your-github-username>.partykit.dev
    ```
 
-6. Go to **Settings -> Pages**.
+6. If you use a custom domain instead of `*.github.io`, allow it in PartyKit:
 
-7. Set **Build and deployment** to **GitHub Actions**.
+   ```bash
+   npx partykit deploy --var PUBLIC_ALLOWED_ORIGINS:https://your-custom-domain.example
+   ```
 
-8. Run the **Deploy GitHub Pages** workflow, or push to `main`.
+   GitHub Pages origins ending in `.github.io`, plus local development origins, are allowed by default.
+
+7. Go to **Settings -> Pages**.
+
+8. Set **Build and deployment** to **GitHub Actions**.
+
+9. Run the **Deploy GitHub Pages** workflow, or push to `main`.
 
 ### Optional PartyKit deploy workflow
 

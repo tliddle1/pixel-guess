@@ -15,9 +15,8 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "noEmit": true,
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["shared/src/*"]
+      "@shared/*": ["./shared/src/*"]
     }
   },
   "include": ["client/src", "client/vite.config.ts", "party/src", "server/src", "shared/src", "tests"]
