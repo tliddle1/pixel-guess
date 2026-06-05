@@ -224,6 +224,11 @@ function App() {
       if (event.type === "canvas_patch") {
         setState((current) => (current ? { ...current, canvas: applyPatch(current.canvas, event.patch) } : current));
       }
+      if (event.type === "canvas_cleared") {
+        setUndoStack([]);
+        setRedoStack([]);
+        setState((current) => (current ? { ...current, canvas: event.canvas } : current));
+      }
       if (event.type === "chat_message") {
         setState((current) => (current ? { ...current, chat: [...current.chat.slice(-49), event.message] } : current));
       }
@@ -246,12 +251,18 @@ function App() {
   const me = state?.players.find((player) => player.id === playerId) ?? null;
   const artist = state?.players.find((player) => player.id === state.artistId) ?? null;
   const isHost = Boolean(me && state?.hostId === me.id);
-  const isArtist = Boolean(me && state?.artistId === me.id && state.phase === "drawing");
+  const isFreeDraw = state?.phase === "free-draw";
+  const canDraw = Boolean(me && state?.artistId === me.id && (state.phase === "drawing" || state.phase === "free-draw"));
+  const canClear = Boolean(me && state?.artistId === me.id && isFreeDraw);
   const canChooseWord = Boolean(me && state?.artistId === me.id && state.phase === "choosing-word");
   const rankedPlayers = [...(state?.players ?? [])].sort((a, b) => b.score - a.score);
 
   function createRoom(): void {
     send(socket, { type: "create_room", name, clientId: cid });
+  }
+
+  function createFreeDraw(): void {
+    send(socket, { type: "create_free_draw", name, clientId: cid });
   }
 
   function joinRoom(spectator = false): void {
@@ -279,6 +290,13 @@ function App() {
     setRedoStack((stack) => stack.slice(0, -1));
     setUndoStack((stack) => [...stack, patch]);
     send(socket, { type: "draw_patch", patch });
+  }
+
+  function clearBoard(): void {
+    if (!canClear) return;
+    setUndoStack([]);
+    setRedoStack([]);
+    send(socket, { type: "clear_canvas" });
   }
 
   function submitGuess(event: React.FormEvent): void {
@@ -324,7 +342,10 @@ function App() {
             <input value={name} maxLength={24} onChange={(event) => setName(event.target.value)} />
           </label>
           <div className="entry-actions">
-            <button onClick={createRoom} disabled={!connected}>Create room</button>
+            <div className="create-row">
+              <button onClick={createRoom} disabled={!connected}>Create room</button>
+              <button className="secondary" onClick={createFreeDraw} disabled={!connected}>Free draw</button>
+            </div>
             <div className="join-row">
               <input placeholder="ROOM" value={roomCodeInput} maxLength={4} onChange={(event) => setRoomCodeInput(event.target.value.toUpperCase())} />
               <button onClick={() => joinRoom(false)} disabled={!connected || roomCodeInput.length < 4}>Join</button>
@@ -342,11 +363,11 @@ function App() {
     <main className="game-shell">
       <header className="topbar">
         <div className="room-summary">
-          <span className="eyebrow">Room {state.code}</span>
-          <strong>{state.phase === "game-over" ? "Final rankings" : `Round ${Math.min(state.round, state.settings.rounds)} / ${state.settings.rounds}`}</strong>
+          <span className="eyebrow">{isFreeDraw ? "Free draw" : `Room ${state.code}`}</span>
+          <strong>{isFreeDraw ? "Open canvas" : state.phase === "game-over" ? "Final rankings" : `Round ${Math.min(state.round, state.settings.rounds)} / ${state.settings.rounds}`}</strong>
         </div>
-        <div className="timer">{state.remainingSeconds}s</div>
-        <div className="artist">Artist: {artist?.name ?? "TBD"}</div>
+        {!isFreeDraw && <div className="timer">{state.remainingSeconds}s</div>}
+        <div className="artist">{isFreeDraw ? "Drawing" : "Artist"}: {artist?.name ?? "TBD"}</div>
       </header>
 
       <aside className="players">
@@ -369,7 +390,7 @@ function App() {
 
       <section className="board-zone">
         <div className="word-line">
-          {canChooseWord ? "Choose a word" : state.wordProgress || "Waiting in lobby"}
+          {isFreeDraw ? "Free draw" : canChooseWord ? "Choose a word" : state.wordProgress || "Waiting in lobby"}
         </div>
         {canChooseWord && (
           <div className="word-choices">
@@ -378,13 +399,14 @@ function App() {
             ))}
           </div>
         )}
-        <PixelBoard canvas={state.canvas} enabled={isArtist} tool={tool} color={color} onPatch={drawPatch} />
-        <div className="toolbar" aria-disabled={!isArtist}>
+        <PixelBoard canvas={state.canvas} enabled={canDraw} tool={tool} color={color} onPatch={drawPatch} />
+        <div className="toolbar" aria-disabled={!canDraw}>
           <button className={tool === "brush" ? "selected" : ""} onClick={() => setTool("brush")} title="Brush">Brush</button>
           <button className={tool === "eraser" ? "selected" : ""} onClick={() => setTool("eraser")} title="Eraser">Eraser</button>
           <button className={tool === "fill" ? "selected" : ""} onClick={() => setTool("fill")} title="Fill">Fill</button>
-          <button onClick={undo} disabled={!isArtist || undoStack.length === 0} title="Undo">Undo</button>
-          <button onClick={redo} disabled={!isArtist || redoStack.length === 0} title="Redo">Redo</button>
+          <button onClick={undo} disabled={!canDraw || undoStack.length === 0} title="Undo">Undo</button>
+          <button onClick={redo} disabled={!canDraw || redoStack.length === 0} title="Redo">Redo</button>
+          {isFreeDraw && <button className="danger" onClick={clearBoard} disabled={!canClear} title="Clear board">Clear</button>}
           <button onClick={saveDrawing} title="Save drawing">Save</button>
         </div>
         <div className="palette">
@@ -413,7 +435,7 @@ function App() {
           ))}
         </div>
         <form onSubmit={submitGuess}>
-          <input value={guess} onChange={(event) => setGuess(event.target.value)} placeholder={me?.id === state.artistId ? "Artists cannot guess" : "Type a guess"} disabled={state.phase !== "drawing" || me?.id === state.artistId} />
+          <input value={guess} onChange={(event) => setGuess(event.target.value)} placeholder={isFreeDraw ? "Free draw has no guesses" : me?.id === state.artistId ? "Artists cannot guess" : "Type a guess"} disabled={state.phase !== "drawing" || me?.id === state.artistId} />
           <button disabled={!guess.trim()}>Send</button>
         </form>
         {error && <p className="error">{error}</p>}

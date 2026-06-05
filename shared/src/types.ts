@@ -1,4 +1,4 @@
-export type GamePhase = "lobby" | "choosing-word" | "drawing" | "round-results" | "game-over";
+export type GamePhase = "lobby" | "choosing-word" | "drawing" | "round-results" | "game-over" | "free-draw";
 
 export type Tool = "brush" | "eraser" | "fill";
 
@@ -58,12 +58,14 @@ export type PublicRoomState = {
 
 export type ClientEvent =
   | { type: "create_room"; name: string; clientId: string }
+  | { type: "create_free_draw"; name: string; clientId: string }
   | { type: "join_room"; roomCode: string; name: string; clientId: string; spectator?: boolean }
   | { type: "rejoin_room"; roomCode: string; clientId: string }
   | { type: "update_settings"; settings: Partial<RoomSettings> }
   | { type: "start_game" }
   | { type: "choose_word"; word: string }
   | { type: "draw_patch"; patch: CanvasPatch }
+  | { type: "clear_canvas" }
   | { type: "submit_guess"; text: string }
   | { type: "leave_room" };
 
@@ -73,6 +75,7 @@ export type ServerEvent =
   | { type: "room_joined"; playerId: string; state: PublicRoomState }
   | { type: "word_choices"; choices: string[] }
   | { type: "canvas_patch"; patch: CanvasPatch }
+  | { type: "canvas_cleared"; canvas: (string | null)[][] }
   | { type: "timer_tick"; remainingSeconds: number }
   | { type: "chat_message"; message: ChatMessage }
   | { type: "score_update"; players: Player[] }

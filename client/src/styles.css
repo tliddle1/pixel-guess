@@ -92,9 +92,14 @@ label {
 }
 
 .entry-actions,
+.create-row,
 .join-row {
   display: grid;
   gap: 0.75rem;
+}
+
+.create-row {
+  grid-template-columns: 1fr 1fr;
 }
 
 .join-row {
@@ -103,6 +108,10 @@ label {
 
 .secondary {
   background: #29adff;
+}
+
+.danger {
+  background: #ff77a8;
 }
 
 .status {
@@ -321,6 +330,7 @@ h2 {
   }
 
   .join-row,
+  .create-row,
   .chat form {
     grid-template-columns: 1fr;
   }

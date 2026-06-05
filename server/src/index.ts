@@ -80,6 +80,7 @@ function remainingSeconds(room: Room): number {
 
 function publicState(room: Room, viewerId?: string): PublicRoomState {
   const isArtist = viewerId === room.artistId;
+  const shouldRevealAnswer = room.phase === "round-results" || room.phase === "game-over" || isArtist;
   return {
     code: room.code,
     hostId: room.hostId,
@@ -88,8 +89,8 @@ function publicState(room: Room, viewerId?: string): PublicRoomState {
     players: room.players,
     artistId: room.artistId,
     round: room.round,
-    wordProgress: room.answer ? maskWord(room.answer, Boolean(isArtist) || room.phase === "round-results" || room.phase === "game-over") : "",
-    answer: room.phase === "round-results" || room.phase === "game-over" || isArtist ? room.answer ?? undefined : undefined,
+    wordProgress: room.answer ? maskWord(room.answer, shouldRevealAnswer) : "",
+    answer: shouldRevealAnswer ? room.answer ?? undefined : undefined,
     canvas: room.canvas,
     chat: room.chat.slice(-50),
     remainingSeconds: remainingSeconds(room),
@@ -124,6 +125,11 @@ function applyPatch(room: Room, patch: CanvasPatch): void {
     }
   }
   room.replay.push(patch);
+}
+
+function clearCanvas(room: Room): void {
+  room.canvas = createCanvas(room.settings.gridSize);
+  room.replay = [];
 }
 
 function stopTimer(room: Room): void {
@@ -209,18 +215,18 @@ function joinSocket(socket: WebSocket, room: Room, player: Player): void {
   sendState(room);
 }
 
-function handleCreateRoom(socket: WebSocket, event: Extract<ClientEvent, { type: "create_room" }>): void {
+function createRoom(socket: WebSocket, event: Extract<ClientEvent, { type: "create_room" | "create_free_draw" }>, phase: Room["phase"]): void {
   const code = createRoomCode();
   const player = makePlayer(event.name, event.clientId);
   const room: Room = {
     code,
     hostId: player.id,
-    phase: "lobby",
+    phase,
     settings: { ...DEFAULT_SETTINGS },
     players: [player],
     artistOrder: [],
     artistOrderIndex: -1,
-    artistId: null,
+    artistId: phase === "free-draw" ? player.id : null,
     round: 1,
     answer: null,
     wordChoices: [],
@@ -228,13 +234,24 @@ function handleCreateRoom(socket: WebSocket, event: Extract<ClientEvent, { type:
     chat: [],
     guessedPlayerIds: new Set(),
     roundStartedAt: 0,
-    remainingSeconds: DEFAULT_SETTINGS.roundSeconds,
+    remainingSeconds: phase === "free-draw" ? 0 : DEFAULT_SETTINGS.roundSeconds,
     timer: null,
     replay: []
   };
   rooms.set(code, room);
   clients.set(socket, { socket, playerId: player.id, roomCode: code });
+  if (phase === "free-draw") {
+    addSystemMessage(room, `${player.name} started a free draw.`);
+  }
   send(socket, { type: "room_created", roomCode: code, playerId: player.id, state: publicState(room, player.id) });
+}
+
+function handleCreateRoom(socket: WebSocket, event: Extract<ClientEvent, { type: "create_room" }>): void {
+  createRoom(socket, event, "lobby");
+}
+
+function handleCreateFreeDraw(socket: WebSocket, event: Extract<ClientEvent, { type: "create_free_draw" }>): void {
+  createRoom(socket, event, "free-draw");
 }
 
 function handleJoinRoom(socket: WebSocket, event: Extract<ClientEvent, { type: "join_room" }>): void {
@@ -256,6 +273,7 @@ function handleJoinRoom(socket: WebSocket, event: Extract<ClientEvent, { type: "
 
 function handleMessage(socket: WebSocket, event: ClientEvent): void {
   if (event.type === "create_room") return handleCreateRoom(socket, event);
+  if (event.type === "create_free_draw") return handleCreateFreeDraw(socket, event);
   if (event.type === "join_room") return handleJoinRoom(socket, event);
   if (event.type === "rejoin_room") {
     const room = rooms.get(event.roomCode.toUpperCase());
@@ -298,9 +316,15 @@ function handleMessage(socket: WebSocket, event: ClientEvent): void {
   }
 
   if (event.type === "draw_patch") {
-    if (player.id !== room.artistId || room.phase !== "drawing") return;
+    if (player.id !== room.artistId || (room.phase !== "drawing" && room.phase !== "free-draw")) return;
     applyPatch(room, event.patch);
     return broadcast(room, { type: "canvas_patch", patch: event.patch });
+  }
+
+  if (event.type === "clear_canvas") {
+    if (player.id !== room.artistId || room.phase !== "free-draw") return;
+    clearCanvas(room);
+    return broadcast(room, { type: "canvas_cleared", canvas: room.canvas });
   }
 
   if (event.type === "submit_guess") {
