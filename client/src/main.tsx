@@ -99,6 +99,19 @@ function inversePatch(patch: CanvasPatch): CanvasPatch {
   return { before: patch.after, after: patch.before };
 }
 
+function makeClearPatch(canvas: (string | null)[][]): CanvasPatch | null {
+  const before: Pixel[] = [];
+  const after: Pixel[] = [];
+  canvas.forEach((row, y) =>
+    row.forEach((color, x) => {
+      if (!color) return;
+      before.push({ x, y, color });
+      after.push({ x, y, color: null });
+    })
+  );
+  return before.length ? { before, after } : null;
+}
+
 function PixelBoard({
   canvas,
   enabled,
@@ -276,12 +289,31 @@ function App() {
     setSocket(ws);
   }
 
+  function returnToMenu(): void {
+    const freeDrawMessage = "Return to the main menu? Your free draw will be cleared.";
+    const roomMessage = "Disconnect from this room and return to the main menu?";
+    if (!window.confirm(isLocalFreeDraw ? freeDrawMessage : roomMessage)) return;
+    if (!isLocalFreeDraw) send(socket, { type: "leave_room" });
+    socketRef.current?.close();
+    socketRef.current = null;
+    openEventRef.current = null;
+    setSocket(null);
+    setConnected(false);
+    setPlayerId(null);
+    setState(null);
+    setError("");
+    setGuess("");
+    setUndoStack([]);
+    setRedoStack([]);
+    forgetRoom();
+  }
+
   const me = state?.players.find((player) => player.id === playerId) ?? null;
   const artist = state?.players.find((player) => player.id === state.artistId) ?? null;
   const isHost = Boolean(me && state?.hostId === me.id);
   const isFreeDraw = state?.phase === "free-draw";
   const canDraw = Boolean(me && state?.artistId === me.id && (state.phase === "drawing" || state.phase === "free-draw"));
-  const canClear = Boolean(me && state?.artistId === me.id && isFreeDraw);
+  const canClear = canDraw;
   const canChooseWord = Boolean(me && state?.artistId === me.id && state.phase === "choosing-word");
   const rankedPlayers = [...(state?.players ?? [])].sort((a, b) => b.score - a.score);
   const isLocalFreeDraw = state?.phase === "free-draw" && state.code === localFreeDrawCode;
@@ -392,13 +424,16 @@ function App() {
   }
 
   function clearBoard(): void {
-    if (!canClear) return;
-    setUndoStack([]);
+    if (!canClear || !state) return;
+    const patch = makeClearPatch(state.canvas);
+    if (!patch) return;
     setRedoStack([]);
     if (isLocalFreeDraw) {
-      setState((current) => (current ? { ...current, canvas: createCanvas(current.settings.gridSize) } : current));
+      setUndoStack((stack) => [...stack, patch].slice(-80));
+      setState((current) => (current ? { ...current, canvas: applyPatch(current.canvas, patch) } : current));
       return;
     }
+    setUndoStack([]);
     send(socket, { type: "clear_canvas" });
   }
 
@@ -470,7 +505,10 @@ function App() {
           <strong>{isFreeDraw ? "Open canvas" : state.phase === "game-over" ? "Final rankings" : `Round ${Math.min(state.round, state.settings.rounds)} / ${state.settings.rounds}`}</strong>
         </div>
         {!isFreeDraw && <div className="timer">{state.remainingSeconds}s</div>}
-        <div className="artist">{isFreeDraw ? "Drawing" : "Artist"}: {artist?.name ?? "TBD"}</div>
+        <div className="topbar-actions">
+          <div className="artist">{isFreeDraw ? "Drawing" : "Artist"}: {artist?.name ?? "TBD"}</div>
+          <button className="secondary compact-action" onClick={returnToMenu}>{isLocalFreeDraw ? "Menu" : "Leave"}</button>
+        </div>
       </header>
 
       <aside className="players">
@@ -509,7 +547,7 @@ function App() {
           <button className={tool === "fill" ? "selected" : ""} onClick={() => setTool("fill")} title="Fill">Fill</button>
           <button onClick={undo} disabled={!canDraw || undoStack.length === 0} title="Undo">Undo</button>
           <button onClick={redo} disabled={!canDraw || redoStack.length === 0} title="Redo">Redo</button>
-          {isFreeDraw && <button className="danger" onClick={clearBoard} disabled={!canClear} title="Clear board">Clear</button>}
+          <button className="danger" onClick={clearBoard} disabled={!canClear} title="Clear board">Clear</button>
           <button onClick={saveDrawing} title="Save drawing">Save</button>
         </div>
         <div className="palette">
@@ -530,17 +568,17 @@ function App() {
 
       <aside className="chat">
         <h2>Chat</h2>
+        <form onSubmit={submitGuess}>
+          <input value={guess} onChange={(event) => setGuess(event.target.value)} placeholder={isFreeDraw ? "Free draw has no guesses" : me?.id === state.artistId ? "Artists cannot guess" : "Type a guess"} disabled={state.phase !== "drawing" || me?.id === state.artistId} />
+          <button disabled={!guess.trim()}>Send</button>
+        </form>
         <div className="messages">
-          {state.chat.map((message) => (
+          {[...state.chat].reverse().map((message) => (
             <p key={message.id} className={message.kind}>
               <strong>{message.playerName}</strong> {message.text}
             </p>
           ))}
         </div>
-        <form onSubmit={submitGuess}>
-          <input value={guess} onChange={(event) => setGuess(event.target.value)} placeholder={isFreeDraw ? "Free draw has no guesses" : me?.id === state.artistId ? "Artists cannot guess" : "Type a guess"} disabled={state.phase !== "drawing" || me?.id === state.artistId} />
-          <button disabled={!guess.trim()}>Send</button>
-        </form>
         {error && <p className="error">{error}</p>}
       </aside>
     </main>

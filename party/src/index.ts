@@ -557,7 +557,7 @@ export default class Server implements Party.Server {
     }
 
     if (event.type === "clear_canvas") {
-      if (player.id !== room.artistId || room.phase !== "free-draw") return;
+      if (player.id !== room.artistId || (room.phase !== "drawing" && room.phase !== "free-draw")) return;
       this.clearCanvas(room);
       this.broadcast({ type: "canvas_cleared", canvas: room.canvas });
       await this.persist();
