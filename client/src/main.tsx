@@ -368,19 +368,8 @@ function App() {
     }
   }
 
-  async function createFreeDraw(): Promise<void> {
-    if (!partyHost) {
-      startLocalFreeDraw();
-      return;
-    }
-    try {
-      const response = await fetch(roomCodeApiUrl(), { method: "POST" });
-      if (!response.ok) throw new Error("Could not create a room code.");
-      const payload = (await response.json()) as { roomCode: string };
-      connectToRoom(payload.roomCode, { type: "create_free_draw", name, clientId: cid });
-    } catch {
-      startLocalFreeDraw();
-    }
+  function createFreeDraw(): void {
+    startLocalFreeDraw();
   }
 
   function joinRoom(spectator = false): void {

@@ -151,4 +151,6 @@ The server is authoritative for scoring, guesses, timers, room membership, and c
 
 The current implementation supports at least 8 active players per room, plus spectators when enabled. Canvas updates are sent as patches, and the server keeps the full canvas state so reconnecting players and late joiners receive the current drawing immediately.
 
+Free draw is always local to the current browser tab. It does not create a PartyKit room or depend on network speed.
+
 For local testing, open multiple tabs or windows. Each tab gets its own player session, while a refresh in that same tab rejoins the same player and room.
