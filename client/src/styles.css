@@ -267,10 +267,24 @@ h2 {
 }
 
 .palette button {
+  position: relative;
   width: 2rem;
   height: 2rem;
   padding: 0;
   box-shadow: 3px 3px 0 #1d2b53;
+}
+
+.palette button.selected {
+  outline: 4px solid #ff004d;
+  outline-offset: 3px;
+}
+
+.palette button.selected::after {
+  content: "";
+  position: absolute;
+  inset: 0.35rem;
+  border: 3px solid #f8f7f0;
+  box-shadow: 0 0 0 2px #1d2b53;
 }
 
 .messages {
